@@ -1,0 +1,48 @@
+apiVersion: 1
+
+datasources:
+  # 1. Metrics Source
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    url: http://prometheus:9090
+    editable: true
+    jsonData:
+      exemplarTraceIdDestinations: # Magic: Link từ Metric -> Trace
+        - name: trace_id
+          datasourceUid: tempo
+
+  # 2. Traces Source
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    url: http://tempo:3200
+    editable: true
+    jsonData:
+      httpMethod: GET
+      serviceMap:
+        datasourceUid: prometheus # ID của Prometheus datasource
+      nodeGraph:
+        enabled: true
+      tracesToLogs: # Magic: Link từ Trace -> Logs (Elastic)
+        datasourceUid: elasticsearch
+        tags: [ 'service.name' ]
+        spanStartTimeShift: '1h'
+        spanEndTimeShift: '1h'
+        filterByTraceID: true
+        filterBySpanID: false
+        mapTagNamesEnabled: false
+
+  # 3. Logs Source
+  - name: Elasticsearch
+    type: elasticsearch
+    uid: elasticsearch
+    url: http://elasticsearch:9200
+    database: "nest-logs-*" # Pattern index log (ta sẽ setup sau)
+    jsonData:
+      esVersion: 8.19.9
+      timeField: "@timestamp"
+      logMessageField: message
+      logLevelField: level
+    #    secureJsonData
+    user: "elastic"

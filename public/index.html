@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NestJS - Kafka - Elastic Demo</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+      .card {
+          box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+      }
+
+      .latency-warning {
+          font-size: 0.9em;
+          color: #dc3545;
+      }
+  </style>
+</head>
+<body class="bg-light">
+
+<div class="container py-5">
+  <h2 class="text-center mb-5">🚀 Eventual Consistency Demo (CQRS)</h2>
+
+  <div class="row g-5">
+    <div class="col-md-5">
+      <div class="card h-100 border-primary">
+        <div class="card-header bg-primary text-white">
+          <h5 class="mb-0">WRITE (PostgreSQL)</h5>
+        </div>
+        <div class="card-body">
+          <p class="text-muted small">Dữ liệu sẽ được lưu vào Postgres, sau đó Debezium sẽ sync sang Kafka ->
+            Elastic.</p>
+          <form id="createForm">
+            <div class="mb-3">
+              <label class="form-label">Tên sản phẩm</label>
+              <input type="text" class="form-control" id="name" required placeholder="Ví dụ: iPhone 15 Pro">
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Giá</label>
+              <input type="number" class="form-control" id="price" required placeholder="30000000">
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Mô tả</label>
+              <textarea class="form-control" id="description" rows="3"
+                        placeholder="Mô tả chi tiết để test search text..."></textarea>
+            </div>
+            <button type="submit" class="btn btn-primary w-100">Lưu vào Database</button>
+          </form>
+          <div id="createStatus" class="mt-3"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-md-7">
+      <div class="card h-100 border-success">
+        <div class="card-header bg-success text-white d-flex justify-content-between align-items-center">
+          <h5 class="mb-0">READ (Elasticsearch)</h5>
+          <span class="badge bg-light text-success">Full-text Search</span>
+        </div>
+        <div class="card-body">
+          <p class="text-muted small">Tìm kiếm siêu tốc trên Elastic. <span class="latency-warning">(Lưu ý: Có độ trễ CDC vài giây)</span>
+          </p>
+
+          <div class="input-group mb-3">
+            <input type="text" class="form-control" id="searchInput"
+                   placeholder="Nhập từ khóa tìm kiếm (name hoặc description)...">
+            <button class="btn btn-success" type="button" onclick="searchProducts()">Tìm kiếm</button>
+          </div>
+
+          <div class="table-responsive">
+            <table class="table table-hover">
+              <thead>
+              <tr>
+                <th>ID</th>
+                <th>Tên</th>
+                <th>Giá</th>
+                <th>Score</th>
+              </tr>
+              </thead>
+              <tbody id="resultsBody">
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  // --- 1. HANDLE CREATE (POST) ---
+  document.getElementById('createForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const statusDiv = document.getElementById('createStatus');
+    statusDiv.innerHTML = '<span class="text-primary">Đang gửi...</span>';
+
+    const data = {
+      name: document.getElementById('name').value,
+      price: Number(document.getElementById('price').value),
+      description: document.getElementById('description').value,
+    };
+
+    try {
+      const res = await fetch('/products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      const result = await res.json();
+
+      if (res.ok) {
+        statusDiv.innerHTML = `<div class="alert alert-success">✅ Đã lưu ID: <b>${result.id}</b>. <br><small>Đang sync sang Elastic...</small></div>`;
+        document.getElementById('createForm').reset();
+      } else {
+        statusDiv.innerHTML = `<div class="alert alert-danger">Lỗi: ${JSON.stringify(result)}</div>`;
+      }
+    } catch (err) {
+      statusDiv.innerHTML = `<div class="alert alert-danger">Lỗi mạng: ${err.message}</div>`;
+    }
+  });
+
+  // --- 2. HANDLE SEARCH (GET) ---
+  async function searchProducts() {
+    const query = document.getElementById('searchInput').value;
+    const tbody = document.getElementById('resultsBody');
+    tbody.innerHTML = '<tr><td colspan="4" class="text-center">Đang tìm...</td></tr>';
+
+    try {
+      const res = await fetch(`/products/search?q=${encodeURIComponent(query)}`);
+      const hits = await res.json(); // Đây là array hits.hits từ server trả về
+
+      tbody.innerHTML = '';
+      if (hits.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">Không tìm thấy kết quả</td></tr>';
+        return;
+      }
+
+      // Render dữ liệu
+      // Lưu ý: data từ Elastic trả về nằm trong _source
+      hits.forEach(hit => {
+        const source = hit._source;
+        const row = `
+                    <tr>
+                        <td>${source.id || hit._id}</td> <td>${source.name}</td>
+                        <td>${new Intl.NumberFormat('vi-VN').format(source.price)} đ</td>
+                        <td><span class="badge bg-secondary">${hit._score.toFixed(2)}</span></td>
+                    </tr>
+                `;
+        tbody.innerHTML += row;
+      });
+
+    } catch (err) {
+      tbody.innerHTML = `<tr><td colspan="4" class="text-danger">Lỗi: ${err.message}</td></tr>`;
+    }
+  }
+
+  // Trigger search khi nhấn Enter
+  document.getElementById('searchInput').addEventListener('keypress', function(e) {
+    if (e.key === 'Enter') searchProducts();
+  });
+</script>
+
+</body>
+</html>
